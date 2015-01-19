@@ -1,0 +1,114 @@
+---
+title: "Predicting Types of Barbell Lifts From Accelerometry Data"
+author: "Owamo"
+date: "Thursday, January 15, 2015"
+output: html_document
+---
+
+### Executive Summary
+This analysis aims to use accelerometry data from belt, forearm, arm and dumbell tor predict the 5 different ways in which the barbells were lifted. The data comes from **Weight Lifting Exercise Dataset** which can be downloaded from these links:
+
+1. [Training dataset: pml-training.csv][1]
+2. [Testing dataset: pml-testing.csv][2]
+
+Six participants were asked to perform one set of 10 repetitions of the Unilateral Dumbbell Biceps Curl in five different fashions: Class A corresponds to the specified execution of the exercise, while the other 4 classes correspond to common mistakes. More information is available [here][3] (see the section on the Weight Lifting Exercise Dataset).
+
+First the data in `pml-training.csv` was partitioned into training and test sets. On the training set, a random forest prediction model was chosen to minimize the out-of-bag error. Then the final model was evaluated on the test set to obtain the expected out-of-sample error. Finally the prediction model was used to predict 20 different test cases in `pml-testing.csv`.
+
+### Create training and test sets
+Assume the required datasets have been downloaded to the working directory, load `pml-training.csv` into R and treat entries with blank spaces, `NA` and `#DIV/0!` as missing values.
+```{r, echo = TRUE}
+data <- read.csv("pml-training.csv", na.strings = c("", "NA", "#DIV/0!"))
+```
+
+We subset 60% of the datat for training the model and 40% to evaluate the final model. 
+```{r, echo = TRUE}
+library(caret)
+set.seed(1234)
+inTrain <- createDataPartition(y = data$classe, p = 0.6, list = FALSE)
+training <- data[inTrain,]
+testing <- data[-inTrain,]
+```
+
+### Tidy training set
+We remove varaibles with mising values and are not sensor-related (i.e. index, participant name, timestamps, window). 
+```{r, echo = TRUE}
+## Tidy data.frame
+keep <- which(apply(training, 2, function(x) sum(is.na(x)))==0) # Drop variables with missing values
+training <- training[, keep]
+training <- training[, 8:60]  # Drop variables that are not sensor-related
+```
+
+Check that the remaining 52 covariates are not zero or near-zero.
+```{r, echo = TRUE}
+nzv <- nearZeroVar(training[,-53], saveMetrics = TRUE)
+sum(nzv[, 3])  # Number of zero variables
+sum(nzv[, 4])  # Number of near-zero variables
+```
+
+Since a non-parametric model (random forests) was applied, no preprocessing was required to transform the variables.
+
+### Training the model
+The random forest model grows many classification trees and produces a prediction based on the "majority vote" over all trees in the forest. There is *no need for cross-validation or a separate test set* to obtain an unbiased estimate of the **test set error** as this is done internally durng the run as the out-of-bag error (for more details see [here][4]). It has been proven in many tests that the out-of-bag error is unbiased.
+
+The only adjustable parameter to which random forests are somewhat sensitive is the number covariates selected a random when constructing each tree. The "optimal"" range for this number is usually quite wide, so we begin with the full number of covariates and half the number at each iteration.
+```{r, echo = TRUE}
+set.seed(4926)
+library(randomForest)
+nvar <- c(52, 26, 13, 6, 3, 1)
+for(i in nvar){
+        assign(paste("modFit", i, sep = ""),
+               randomForest(classe ~ ., data = training, 
+                            ntree = 500, mtry = i))
+}
+
+OOB <- c(modFit52$err.rate[500,1],
+         modFit26$err.rate[500,1],
+         modFit13$err.rate[500,1],
+         modFit6$err.rate[500,1],
+         modFit3$err.rate[500,1],
+         modFit1$err.rate[500,1])*100
+plot(nvar, OOB, log="x", type="o", lwd = 2,
+     main = "Out-of-bag error estimates", 
+     xlab = "Number of covariates", ylab = "OOB (%)")
+
+modFit6
+```
+
+As shown in the figure, the model with 6 covariates (`modFit6`) gave the lowest OOB error estimate (`0.69%`). So we chose this as the final model. The out-of-sample error is expected to be larger than this due to a degree of overfitting.
+
+Plot the error rate of this model for each classificiation.
+```{r, echo = TRUE}
+plot(modFit6)
+```
+
+The default number of trees (500) is more than sufficient given the tradeoff between training time and accuracy. The plot suggests there is little marginal benefit to increasing the number of trees and it may be even possible to reduce the number to 100. However for the purposes of this analysis we keep the default.
+
+While random forests are not easily interpretable predictors, the variable importance analysis offers some insight into the model.
+```{r, echo = TRUE}
+varImpPlot(modFit6)
+```
+
+Here `roll_belt` is clearly the most important covariate in terms of decrease in node impurities as measured by the Gini index. Although we do not do this here, one may consider fine tuning of the model performance based on that importance classification.
+
+### Evaluating the final model
+Use the final model to predict responses in the test set `testing` which comprises of 40% of the data in `pml-training.csv`. Then compare the predicted values with the actual values.
+```{r, echo = TRUE}
+testPred <- predict(modFit6, newdata = testing)
+confusionMatrix(testPred, testing$classe)
+```
+
+The model performed very well with high accuracy. The estimated out-of-sample error rate is `1 - 0.9925 = 0.0075` or `0.75%`, which is slightly larger than the out-of-bag error estimate. This is expected due to overfitting.
+
+### Predicting 20 different test cases
+The final model was used to predict the 20 different test cases from `pml-testing.csv`.
+```{r, echo = TRUE}
+quiz <- read.csv("pml-testing.csv", na.strings = c("", "NA", "#DIV/0!"))
+predict(modFit6, newdata = quiz)
+```
+
+----
+[1]: https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv "WLE training dataset"
+[2]: https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv "WLE testing dataset"
+[3]: http://groupware.les.inf.puc-rio.br/har "WLE website"
+[4]: http://www.stat.berkeley.edu/~breiman/RandomForests/cc_home.htm#ooberr "Random Forest website"
